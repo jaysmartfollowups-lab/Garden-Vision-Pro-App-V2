@@ -2,6 +2,7 @@ import express from "express";
 import { createServer as createViteServer } from "vite";
 import path from "path";
 import { fileURLToPath } from "url";
+import { fal } from "@fal-ai/client";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -120,6 +121,8 @@ async function startServer() {
     }
 
     try {
+      fal.config({ credentials: falKey });
+
       const base64Data = base64.includes(',') ? base64.split(',')[1] : base64;
       const mimeMatch = base64.match(/data:([^;]+);/);
       const mimeType = mimeMatch ? mimeMatch[1] : 'image/png';
@@ -128,24 +131,12 @@ async function startServer() {
 
       console.log(`📤 Uploading ${fname} (${(buffer.length / 1024).toFixed(0)}KB) to fal.ai...`);
 
-      // Try the REST API upload endpoint
-      const response = await fetch('https://rest.alpha.fal.ai/storage/upload', {
-        method: 'POST',
-        headers: {
-          'Authorization': `Key ${falKey}`,
-          'Content-Type': mimeType,
-          'X-Fal-File-Name': fname,
-        },
-        body: buffer,
-      });
+      // Use the official fal-ai client for reliable storage uploading
+      const b = new Blob([buffer], { type: mimeType });
+      // Add a property 'name' to the Blob so fal client knows what extension to use
+      (b as any).name = fname;
 
-      if (!response.ok) {
-        const errText = await response.text().catch(() => '');
-        throw new Error(`fal.ai upload failed (${response.status}): ${errText}`);
-      }
-
-      const data = await response.json();
-      const url = data.url || data.file_url;
+      const url = await fal.storage.upload(b);
 
       if (!url) {
         throw new Error('fal.ai upload returned no URL');
