@@ -87,7 +87,61 @@ async function retryableGenerate<T>(
 
 // ─── Engine 1: FLUX Inpainting (for masked edits) ────────────────────────────
 
-// Helper: Upload a single base64 image to fal.ai storage via our server
+// Compress image client-side before uploading to keep request payload tiny.
+// For inpainting, 512px is plenty — FLUX generates at its own resolution.
+function compressForUpload(base64: string, maxDim: number = 512, quality: number = 0.6): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => {
+      const canvas = document.createElement('canvas');
+      let w = img.width, h = img.height;
+
+      // Resize to fit within maxDim
+      if (w > h) {
+        if (w > maxDim) { h *= maxDim / w; w = maxDim; }
+      } else {
+        if (h > maxDim) { w *= maxDim / h; h = maxDim; }
+      }
+
+      canvas.width = Math.round(w);
+      canvas.height = Math.round(h);
+      const ctx = canvas.getContext('2d')!;
+      ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+
+      resolve(canvas.toDataURL('image/jpeg', quality));
+    };
+    img.onerror = () => reject(new Error('Failed to compress image'));
+    img.src = base64;
+  });
+}
+
+// Compress mask — keep it as PNG (black/white compresses well in PNG)
+function compressMask(base64: string, maxDim: number = 512): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => {
+      const canvas = document.createElement('canvas');
+      let w = img.width, h = img.height;
+
+      if (w > h) {
+        if (w > maxDim) { h *= maxDim / w; w = maxDim; }
+      } else {
+        if (h > maxDim) { w *= maxDim / h; h = maxDim; }
+      }
+
+      canvas.width = Math.round(w);
+      canvas.height = Math.round(h);
+      const ctx = canvas.getContext('2d')!;
+      ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+
+      resolve(canvas.toDataURL('image/png'));
+    };
+    img.onerror = () => reject(new Error('Failed to compress mask'));
+    img.src = base64;
+  });
+}
+
+// Helper: Upload a single compressed image to fal.ai storage via our server
 async function uploadImageToFal(base64: string, filename: string): Promise<string> {
   const res = await fetch('/api/fal-upload', {
     method: 'POST',
@@ -114,11 +168,18 @@ async function inpaintWithFlux(
 ): Promise<{ imageUrl: string }> {
   console.log("🎯 MASK DETECTED → Using FLUX Pro Fill for true inpainting");
 
-  // Step 1: Upload both images to fal.ai CDN separately (avoids 413 errors)
-  console.log("📤 Uploading images to fal.ai storage...");
+  // Step 1: Compress images client-side (512px, JPEG 0.6 = ~30-80KB each)
+  console.log("🗜️ Compressing images for upload...");
+  const [compressedImage, compressedMask] = await Promise.all([
+    compressForUpload(base64Image, 512, 0.6),
+    compressMask(maskBase64, 512),
+  ]);
+
+  // Step 2: Upload both images to fal.ai CDN separately (avoids 413 errors)
+  console.log("📤 Uploading compressed images to fal.ai storage...");
   const [imageUrl, maskUrl] = await Promise.all([
-    uploadImageToFal(base64Image, 'garden-image.png'),
-    uploadImageToFal(maskBase64, 'garden-mask.png'),
+    uploadImageToFal(compressedImage, 'garden-image.jpg'),
+    uploadImageToFal(compressedMask, 'garden-mask.png'),
   ]);
   console.log("✅ Images uploaded to CDN");
 
