@@ -120,10 +120,64 @@ async function startServer() {
       return res.status(400).json({ error: "imageBase64, maskBase64, and prompt are required" });
     }
 
+    // Helper: Upload a base64 data URI to fal.ai storage and get a CDN URL back.
+    // This avoids 413 errors from sending huge base64 payloads in the API call.
+    async function uploadToFalStorage(base64DataUri: string, filename: string): Promise<string> {
+      // Strip the data URI prefix to get raw base64
+      const base64Data = base64DataUri.includes(',') ? base64DataUri.split(',')[1] : base64DataUri;
+      const mimeMatch = base64DataUri.match(/data:([^;]+);/);
+      const mimeType = mimeMatch ? mimeMatch[1] : 'image/png';
+      
+      // Convert base64 to Buffer
+      const buffer = Buffer.from(base64Data, 'base64');
+
+      // Upload to fal.ai storage
+      const uploadResponse = await fetch(`https://fal.ai/api/storage/upload/${filename}`, {
+        method: 'PUT',
+        headers: {
+          'Authorization': `Key ${falKey}`,
+          'Content-Type': mimeType,
+        },
+        body: buffer,
+      });
+
+      if (!uploadResponse.ok) {
+        // Try the REST API endpoint as fallback
+        const restResponse = await fetch('https://rest.alpha.fal.ai/storage/upload', {
+          method: 'POST',
+          headers: {
+            'Authorization': `Key ${falKey}`,
+            'Content-Type': mimeType,
+            'X-Fal-File-Name': filename,
+          },
+          body: buffer,
+        });
+
+        if (!restResponse.ok) {
+          throw new Error(`Failed to upload ${filename} to fal.ai storage (${restResponse.status})`);
+        }
+
+        const restData = await restResponse.json();
+        return restData.url || restData.file_url;
+      }
+
+      const data = await uploadResponse.json();
+      return data.url || data.file_url;
+    }
+
     try {
       console.log("🎨 Starting FLUX inpainting with mask...");
+      console.log("📤 Uploading images to fal.ai storage...");
 
-      // Use fal.ai's FLUX Pro Fill — production-grade inpainting
+      // Upload both images to fal.ai CDN (parallel for speed)
+      const [imageUrl, maskUrl] = await Promise.all([
+        uploadToFalStorage(imageBase64, 'garden-image.png'),
+        uploadToFalStorage(maskBase64, 'garden-mask.png'),
+      ]);
+
+      console.log("✅ Images uploaded. Calling FLUX Pro Fill...");
+
+      // Now call the inpainting API with lightweight CDN URLs (not base64)
       const response = await fetch("https://fal.run/fal-ai/flux-pro/v1/fill", {
         method: "POST",
         headers: {
@@ -132,8 +186,8 @@ async function startServer() {
         },
         body: JSON.stringify({
           prompt: prompt,
-          image_url: imageBase64,
-          mask_url: maskBase64,
+          image_url: imageUrl,
+          mask_url: maskUrl,
           num_images: 1,
           output_format: "png",
           sync_mode: true,
@@ -155,8 +209,8 @@ async function startServer() {
           },
           body: JSON.stringify({
             prompt: prompt,
-            image_url: imageBase64,
-            mask_url: maskBase64,
+            image_url: imageUrl,
+            mask_url: maskUrl,
             num_images: 1,
             output_format: "png",
             sync_mode: true,
