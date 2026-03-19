@@ -8,7 +8,6 @@ function isRetryableError(error: any): boolean {
   const message = (error?.message || '').toLowerCase();
   const status = error?.status || error?.code || error?.httpCode;
   
-  // 503 Service Unavailable, 429 Too Many Requests, UNAVAILABLE, RESOURCE_EXHAUSTED
   if (status === 503 || status === 429) return true;
   if (message.includes('503') || message.includes('unavailable')) return true;
   if (message.includes('429') || message.includes('resource_exhausted')) return true;
@@ -23,13 +22,13 @@ function getUserFriendlyError(error: any): string {
   const message = (error?.message || '').toLowerCase();
   
   if (message.includes('503') || message.includes('unavailable') || message.includes('high demand')) {
-    return '🔄 The Gemini AI model is experiencing high demand right now. This is temporary — please try again in a moment.';
+    return '🔄 The AI model is experiencing high demand right now. This is temporary — please try again in a moment.';
   }
   if (message.includes('429') || message.includes('rate limit') || message.includes('quota') || message.includes('resource_exhausted')) {
     return '⏳ You\'ve hit the API rate limit. Please wait a minute before trying again.';
   }
   if (message.includes('api key') || message.includes('authentication') || message.includes('permission')) {
-    return '🔑 API key issue — please check that your Gemini API key is valid and has the correct permissions.';
+    return '🔑 API key issue — please check that your API key is valid and has the correct permissions.';
   }
   if (message.includes('safety') || message.includes('blocked') || message.includes('filter')) {
     return '🛡️ The AI safety filter blocked this request. Try rephrasing your transformation description.';
@@ -54,7 +53,7 @@ async function retryableGenerate<T>(
       lastError = error;
       
       if (attempt < MAX_RETRIES && isRetryableError(error)) {
-        const delay = BASE_DELAY_MS * Math.pow(2, attempt); // 2s, 4s, 8s
+        const delay = BASE_DELAY_MS * Math.pow(2, attempt);
         console.warn(
           `⚠️ ${context} failed (attempt ${attempt + 1}/${MAX_RETRIES + 1}): ${error.message}. Retrying in ${delay / 1000}s...`
         );
@@ -65,16 +64,86 @@ async function retryableGenerate<T>(
     }
   }
   
-  // All retries exhausted — throw user-friendly error
   throw new Error(getUserFriendlyError(lastError));
 }
 
-// ─── Main Transform Function ─────────────────────────────────────────────────
 
-export async function transformGarden(
+// ═══════════════════════════════════════════════════════════════════════════════
+// DUAL-ENGINE ARCHITECTURE
+// ═══════════════════════════════════════════════════════════════════════════════
+//
+// Engine 1: FLUX Pro Fill (fal.ai) — Used when a MASK is present
+//   → True inpainting model that architecturally understands masks
+//   → ONLY regenerates pixels in the white (masked) region
+//   → Preserves ALL original pixels in the black (unmasked) region
+//   → This is the same technology used by production design tools
+//
+// Engine 2: Gemini (Google) — Used for FULL garden transformations (no mask)
+//   → Excellent at generating complete garden redesigns
+//   → Cannot do pixel-level inpainting (it regenerates the entire image)
+//
+// ═══════════════════════════════════════════════════════════════════════════════
+
+
+// ─── Engine 1: FLUX Inpainting (for masked edits) ────────────────────────────
+
+async function inpaintWithFlux(
+  base64Image: string,
+  maskBase64: string,
+  prompt: string
+): Promise<{ imageUrl: string }> {
+  console.log("🎯 MASK DETECTED → Using FLUX Pro Fill for true inpainting");
+
+  const response = await retryableGenerate(
+    async () => {
+      const res = await fetch('/api/inpaint', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          imageBase64: base64Image,
+          maskBase64: maskBase64,
+          prompt: prompt
+        })
+      });
+
+      if (!res.ok) {
+        const errorData = await res.json().catch(() => ({}));
+        const errorMsg = errorData.error || `Inpainting API returned ${res.status}`;
+        const error: any = new Error(errorMsg);
+        error.status = res.status;
+        throw error;
+      }
+
+      return res.json();
+    },
+    'FLUX inpainting'
+  );
+
+  // fal.ai returns { images: [{ url: "..." }] }
+  const imageUrl = response.images?.[0]?.url;
+
+  if (!imageUrl) {
+    throw new Error("The inpainting model did not return an image. Please try again.");
+  }
+
+  // Fetch the image from fal.ai's CDN and convert to base64 data URI
+  const imageResponse = await fetch(imageUrl);
+  const imageBlob = await imageResponse.blob();
+  const imageBase64Result = await new Promise<string>((resolve) => {
+    const reader = new FileReader();
+    reader.onloadend = () => resolve(reader.result as string);
+    reader.readAsDataURL(imageBlob);
+  });
+
+  return { imageUrl: imageBase64Result };
+}
+
+
+// ─── Engine 2: Gemini (for full transformations, no mask) ────────────────────
+
+async function transformWithGemini(
   base64Image: string,
   prompt: string,
-  maskImage?: string,
   siteIntelligence?: {
     weather?: {
       sunshineHoursPerDay: number;
@@ -84,16 +153,17 @@ export async function transformGarden(
     };
     address?: string;
   }
-) {
+): Promise<{ imageUrl: string; plantLegend: string }> {
+  console.log("🌿 NO MASK → Using Gemini for full garden transformation");
+
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) {
     throw new Error("🔑 Gemini API Key is missing. Please ensure it is set in your environment variables.");
   }
 
   const ai = new GoogleGenAI({ apiKey });
-  const model = "gemini-2.5-flash-image";
 
-  // Step 1: Vision pre-pass — spatial constraint analysis (with retry)
+  // Step 1: Vision pre-pass — spatial constraint analysis
   let spatialAnalysis = 'Spatial analysis not available.';
   try {
     const visionResponse = await retryableGenerate(
@@ -135,7 +205,6 @@ Output ONLY the JSON. No markdown fences, no explanation.`
       `Garden area: ${c.garden_area || 'full ground area'}`,
     ].join('\n      ');
   } catch {
-    // Vision pre-pass failed — continue without it
     console.warn('Vision pre-pass skipped (non-critical)');
   }
 
@@ -157,11 +226,6 @@ Output ONLY the JSON. No markdown fences, no explanation.`
     },
   ];
 
-  // NOTE: We intentionally do NOT send the mask image to Gemini.
-  // Gemini is a generative model, not an inpainting model — it cannot
-  // respect pixel-level masks. Instead, we handle masking entirely
-  // client-side via compositing with feathered edges (see image.ts).
-
   parts.push({
     text: `You are a Senior Professional Garden Designer with expertise in spatial planning and landscape architecture. Transform this garden based on this description: "${prompt}".
 
@@ -180,16 +244,16 @@ Output ONLY the JSON. No markdown fences, no explanation.`
       5. PROPORTIONAL SCALE: Ensure all furniture, planters, and features are scaled appropriately to the size of the garden. Do not overcrowd small spaces with oversized furniture.
       6. USAGE-FIRST LOGIC: Prioritize how people will actually move and live in the garden. A design must be as functional as it is beautiful.
       7. REMOVE CLUTTER: Automatically identify and remove unsightly objects (bins, trash, tools) and replace them with intentional design elements.
-      8. ITERATIVE DESIGN: Build ON TOP of the provided image. ${maskImage ? 'CRITICAL PARTIAL EDIT MODE: The user wants to change ONLY a specific area of this garden. You MUST preserve the EXACT same camera angle, perspective, lighting, shadows, colors, and composition as the original photo. Every part of the image that is NOT being changed must be PIXEL-IDENTICAL to the original. Generate the full garden image but ONLY apply the described change ("' + prompt + '") to the relevant area. Everything else — fences, buildings, paths, plants, sky, unchanged grass — must look exactly like the original photo. Do NOT reimagine or restyle the overall scene.' : 'Transform the whole garden as described.'}
+      8. ITERATIVE DESIGN: Build ON TOP of the provided image. Transform the whole garden as described.
       9. UK CONTEXT: Use plants and materials suitable for the UK climate (e.g., Lavender, Hydrangeas, York stone).
 
       CLIENT-READY OUTPUT: The final image must be a photorealistic, professional design proposal that demonstrates both aesthetic beauty and practical common sense.`,
   });
 
-  // Step 2: Main image generation (with retry)
+  // Step 2: Main image generation
   const response = await retryableGenerate(
     () => ai.models.generateContent({
-      model,
+      model: "gemini-2.5-flash-image",
       contents: { parts },
     }),
     'Garden image generation'
@@ -210,7 +274,7 @@ Output ONLY the JSON. No markdown fences, no explanation.`
     throw new Error("The AI model did not generate an image. Please try a different prompt.");
   }
 
-  // Step 3: Plant legend (with retry, non-critical)
+  // Step 3: Plant legend (non-critical)
   let plantLegend = "No plant legend generated.";
   try {
     const legendResponse = await retryableGenerate(
@@ -227,11 +291,58 @@ Output ONLY the JSON. No markdown fences, no explanation.`
     plantLegend = legendResponse.text || plantLegend;
   } catch (legendErr: any) {
     console.warn('Plant legend generation failed (non-critical):', legendErr.message);
-    // Continue without plant legend — the image is the priority
   }
 
-  return {
-    imageUrl,
-    plantLegend,
-  };
+  return { imageUrl, plantLegend };
+}
+
+
+// ─── Public API: Route to the correct engine ─────────────────────────────────
+
+export async function transformGarden(
+  base64Image: string,
+  prompt: string,
+  maskImage?: string,
+  siteIntelligence?: {
+    weather?: {
+      sunshineHoursPerDay: number;
+      weeklyRainfallMm: number;
+      avgWindSpeedKmh: number;
+      avgUvIndex: number;
+    };
+    address?: string;
+  }
+): Promise<{ imageUrl: string; plantLegend: string }> {
+
+  // ╔══════════════════════════════════════════════════════════════════════╗
+  // ║  ROUTING DECISION                                                    ║
+  // ║  Mask present?  → FLUX Pro Fill (true inpainting, pixel-perfect)    ║
+  // ║  No mask?       → Gemini (full garden transformation)               ║
+  // ╚══════════════════════════════════════════════════════════════════════╝
+
+  if (maskImage) {
+    // FLUX inpainting handles the image generation
+    const result = await inpaintWithFlux(base64Image, maskImage, prompt);
+
+    // Generate plant legend via Gemini (it's just text, fast & cheap)
+    let plantLegend = "No plant legend generated.";
+    try {
+      const apiKey = process.env.GEMINI_API_KEY;
+      if (apiKey) {
+        const ai = new GoogleGenAI({ apiKey });
+        const legendResponse = await ai.models.generateContent({
+          model: "gemini-2.5-flash",
+          contents: `Based on this garden transformation description: "${prompt}", list specific plants (common and Latin names) suitable for a UK garden. Format as a clean markdown list with brief care tips for each.`,
+        });
+        plantLegend = legendResponse.text || plantLegend;
+      }
+    } catch {
+      // Plant legend is non-critical
+    }
+
+    return { imageUrl: result.imageUrl, plantLegend };
+  }
+
+  // No mask — use Gemini for full transformation
+  return transformWithGemini(base64Image, prompt, siteIntelligence);
 }

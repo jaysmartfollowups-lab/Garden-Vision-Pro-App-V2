@@ -249,12 +249,13 @@ export function ProjectView({ project, onBack }: ProjectViewProps) {
 
       console.log("Transformation successful, processing image...");
 
-      // Composite: manual mask takes priority, then auto-mask, then no compositing
-      // Feather the mask edges for seamless blending between original & transformed
+      // FLUX inpainting (when manual mask is used) already produces a pixel-perfect
+      // result — no client-side compositing needed. Only apply compositing for
+      // auto-mask (SAM 2) which goes through Gemini and needs blending.
       let finalImageUrl = result.imageUrl;
-      const activeMask = maskBase64 || autoMask;
-      if (activeMask) {
-        const featheredMask = await featherMask(activeMask, 20);
+      if (!maskBase64 && autoMask) {
+        // Auto-mask path: Gemini generated a full new image, blend with original
+        const featheredMask = await featherMask(autoMask, 20);
         finalImageUrl = await compositeImages(currentVersion.imageUrl, result.imageUrl, featheredMask);
       }
 
@@ -294,7 +295,11 @@ export function ProjectView({ project, onBack }: ProjectViewProps) {
       let errorMessage = 'An error occurred during generation. Please try again.';
       
       if (err.message) {
-        if (err.message.includes('authInfo')) {
+        if (err.message.includes('FAL_KEY') || err.message.includes('fal.ai')) {
+          errorMessage = '🔑 Mask editing requires a fal.ai API key. Add FAL_KEY to your Secrets in Settings (get one free at fal.ai/dashboard/keys).';
+        } else if (err.message.includes('Inpainting') || err.message.includes('inpainting')) {
+          errorMessage = '🎨 Mask inpainting failed. ' + err.message;
+        } else if (err.message.includes('authInfo')) {
           errorMessage = 'Database permission error. Please check your security rules.';
         } else {
           errorMessage = err.message;

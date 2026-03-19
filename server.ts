@@ -10,7 +10,7 @@ async function startServer() {
   const app = express();
   const PORT = 3002;
 
-  app.use(express.json());
+  app.use(express.json({ limit: '50mb' }));
 
   // API Routes
   
@@ -101,6 +101,86 @@ async function startServer() {
     } catch (error) {
       console.error("SAM 2 Error:", error);
       res.status(500).json({ error: "Segmentation failed" });
+    }
+  });
+
+  // ─── FLUX Inpainting Proxy (fal.ai — True pixel-level mask inpainting) ───
+  // This uses a dedicated inpainting model that architecturally understands masks.
+  // Unlike Gemini (which regenerates the entire image), FLUX Fill ONLY modifies
+  // pixels in the masked (white) region and preserves everything else exactly.
+  app.post("/api/inpaint", async (req, res) => {
+    const { imageBase64, maskBase64, prompt } = req.body;
+    const falKey = process.env.FAL_KEY;
+
+    if (!falKey || falKey === 'your_fal_key_here') {
+      return res.status(503).json({ error: "FAL_KEY not configured — add your fal.ai key to .env for mask editing" });
+    }
+
+    if (!imageBase64 || !maskBase64 || !prompt) {
+      return res.status(400).json({ error: "imageBase64, maskBase64, and prompt are required" });
+    }
+
+    try {
+      console.log("🎨 Starting FLUX inpainting with mask...");
+
+      // Use fal.ai's FLUX Pro Fill — production-grade inpainting
+      const response = await fetch("https://fal.run/fal-ai/flux-pro/v1/fill", {
+        method: "POST",
+        headers: {
+          "Authorization": `Key ${falKey}`,
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          prompt: prompt,
+          image_url: imageBase64,
+          mask_url: maskBase64,
+          num_images: 1,
+          output_format: "png",
+          sync_mode: true,
+          safety_tolerance: "5"
+        })
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        console.error("FLUX Fill API Error:", response.status, errorData);
+        
+        // Fallback to flux-general/inpainting if Pro isn't available
+        console.log("⚠️ Pro Fill unavailable, trying flux-general/inpainting...");
+        const fallbackResponse = await fetch("https://fal.run/fal-ai/flux-general/inpainting", {
+          method: "POST",
+          headers: {
+            "Authorization": `Key ${falKey}`,
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify({
+            prompt: prompt,
+            image_url: imageBase64,
+            mask_url: maskBase64,
+            num_images: 1,
+            output_format: "png",
+            sync_mode: true,
+            num_inference_steps: 28,
+            guidance_scale: 3.5
+          })
+        });
+
+        if (!fallbackResponse.ok) {
+          const fbError = await fallbackResponse.json().catch(() => ({}));
+          throw new Error(`Inpainting failed: ${JSON.stringify(fbError)}`);
+        }
+
+        const fallbackData = await fallbackResponse.json();
+        console.log("✅ FLUX General inpainting completed successfully");
+        return res.json(fallbackData);
+      }
+
+      const data = await response.json();
+      console.log("✅ FLUX Pro Fill inpainting completed successfully");
+      res.json(data);
+    } catch (error: any) {
+      console.error("Inpainting Error:", error);
+      res.status(500).json({ error: error.message || "Inpainting failed" });
     }
   });
 
