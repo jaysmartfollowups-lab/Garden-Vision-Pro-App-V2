@@ -1,0 +1,43 @@
+{
+  "entities": {
+    "Project": {
+      "title": "Project",
+      "description": "A landscaping project for a client.",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string", "description": "Client name or project title" },
+        "address": { "type": "string", "description": "Project location" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" },
+        "ownerId": { "type": "string", "description": "UID of the landscaper" }
+      },
+      "required": ["name", "ownerId"]
+    },
+    "GardenVersion": {
+      "title": "Garden Version",
+      "description": "A specific iteration of the garden design.",
+      "type": "object",
+      "properties": {
+        "projectId": { "type": "string" },
+        "imageUrl": { "type": "string", "description": "Base64 or storage URL of the generated image" },
+        "originalImageUrl": { "type": "string", "description": "The image this was derived from" },
+        "maskUrl": { "type": "string", "description": "The mask used for this generation (if any)" },
+        "prompt": { "type": "string", "description": "The description used for transformation" },
+        "plantLegend": { "type": "string", "description": "Markdown list of plants suggested by AI" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "parentVersionId": { "type": "string", "description": "ID of the version this was branched from" }
+      },
+      "required": ["projectId", "imageUrl", "prompt"]
+    }
+  },
+  "firestore": {
+    "/projects/{projectId}": {
+      "schema": "Project",
+      "description": "Landscaping projects"
+    },
+    "/projects/{projectId}/versions/{versionId}": {
+      "schema": "GardenVersion",
+      "description": "Design iterations for a project"
+    }
+  }
+}

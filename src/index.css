@@ -1,0 +1,74 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap');
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+}
+
+/* Google Maps Autocomplete Styling */
+.gmp-autocomplete-container {
+  width: 100%;
+}
+
+place-autocomplete-element {
+  width: 100%;
+}
+
+place-autocomplete-element::part(input) {
+  width: 100%;
+  padding: 1rem;
+  background-color: #f4f4f5; /* bg-zinc-50 */
+  border: 2px solid #f4f4f5;
+  border-radius: 1rem; /* rounded-2xl */
+  font-family: inherit;
+  font-weight: 500;
+  transition: all 0.2s;
+}
+
+place-autocomplete-element::part(input):focus {
+  background-color: white;
+  border-color: #10b981; /* border-emerald-500 */
+  outline: none;
+}
+
+@layer base {
+  body {
+    @apply antialiased text-zinc-900 bg-[#FDFCFB];
+  }
+}
+
+@layer components {
+  .prose-emerald h1, .prose-emerald h2, .prose-emerald h3 {
+    @apply font-black tracking-tight text-zinc-900 mb-4;
+  }
+  .prose-emerald ul {
+    @apply space-y-3 list-none p-0;
+  }
+  .prose-emerald li {
+    @apply flex items-start gap-3 text-sm text-zinc-600 leading-relaxed;
+  }
+  .prose-emerald li::before {
+    content: "•";
+    @apply text-emerald-500 font-bold text-lg leading-none mt-0.5;
+  }
+  .prose-emerald strong {
+    @apply text-zinc-900 font-bold;
+  }
+}
+
+/* Custom scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+}
+::-webkit-scrollbar-track {
+  @apply bg-transparent;
+}
+::-webkit-scrollbar-thumb {
+  @apply bg-zinc-200 rounded-full hover:bg-zinc-300 transition-colors;
+}
+
+/* Canvas cursor */
+canvas {
+  touch-action: none;
+}
+

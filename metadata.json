@@ -1,0 +1,8 @@
+{
+  "name": "GardenVision Pro",
+  "description": "AI-powered garden renovation tool for professional landscapers. Transform photos with voice/text, maintain site integrity with masking, and generate UK-climate plant legends.",
+  "requestFramePermissions": [
+    "camera",
+    "microphone"
+  ]
+}
