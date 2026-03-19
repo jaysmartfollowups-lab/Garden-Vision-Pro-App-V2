@@ -1,6 +1,75 @@
 import { GoogleGenAI } from "@google/genai";
 
-const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY! });
+// ─── Retry Helper with Exponential Backoff ───────────────────────────────────
+const MAX_RETRIES = 3;
+const BASE_DELAY_MS = 2000; // 2s, 4s, 8s
+
+function isRetryableError(error: any): boolean {
+  const message = (error?.message || '').toLowerCase();
+  const status = error?.status || error?.code || error?.httpCode;
+  
+  // 503 Service Unavailable, 429 Too Many Requests, UNAVAILABLE, RESOURCE_EXHAUSTED
+  if (status === 503 || status === 429) return true;
+  if (message.includes('503') || message.includes('unavailable')) return true;
+  if (message.includes('429') || message.includes('resource_exhausted')) return true;
+  if (message.includes('high demand') || message.includes('overloaded')) return true;
+  if (message.includes('rate limit') || message.includes('quota')) return true;
+  if (message.includes('internal') && message.includes('error')) return true;
+  
+  return false;
+}
+
+function getUserFriendlyError(error: any): string {
+  const message = (error?.message || '').toLowerCase();
+  
+  if (message.includes('503') || message.includes('unavailable') || message.includes('high demand')) {
+    return '🔄 The Gemini AI model is experiencing high demand right now. This is temporary — please try again in a moment.';
+  }
+  if (message.includes('429') || message.includes('rate limit') || message.includes('quota') || message.includes('resource_exhausted')) {
+    return '⏳ You\'ve hit the API rate limit. Please wait a minute before trying again.';
+  }
+  if (message.includes('api key') || message.includes('authentication') || message.includes('permission')) {
+    return '🔑 API key issue — please check that your Gemini API key is valid and has the correct permissions.';
+  }
+  if (message.includes('safety') || message.includes('blocked') || message.includes('filter')) {
+    return '🛡️ The AI safety filter blocked this request. Try rephrasing your transformation description.';
+  }
+  if (message.includes('timeout') || message.includes('deadline')) {
+    return '⏱️ The request timed out. The image may be too large or the prompt too complex. Try again with a simpler description.';
+  }
+  
+  return error?.message || 'An unexpected error occurred during AI generation. Please try again.';
+}
+
+async function retryableGenerate<T>(
+  fn: () => Promise<T>,
+  context: string = 'API call'
+): Promise<T> {
+  let lastError: any;
+  
+  for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+    try {
+      return await fn();
+    } catch (error: any) {
+      lastError = error;
+      
+      if (attempt < MAX_RETRIES && isRetryableError(error)) {
+        const delay = BASE_DELAY_MS * Math.pow(2, attempt); // 2s, 4s, 8s
+        console.warn(
+          `⚠️ ${context} failed (attempt ${attempt + 1}/${MAX_RETRIES + 1}): ${error.message}. Retrying in ${delay / 1000}s...`
+        );
+        await new Promise(resolve => setTimeout(resolve, delay));
+      } else {
+        break;
+      }
+    }
+  }
+  
+  // All retries exhausted — throw user-friendly error
+  throw new Error(getUserFriendlyError(lastError));
+}
+
+// ─── Main Transform Function ─────────────────────────────────────────────────
 
 export async function transformGarden(
   base64Image: string,
@@ -18,27 +87,28 @@ export async function transformGarden(
 ) {
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) {
-    throw new Error("Gemini API Key is missing. Please ensure it is set in your environment variables.");
+    throw new Error("🔑 Gemini API Key is missing. Please ensure it is set in your environment variables.");
   }
 
   const ai = new GoogleGenAI({ apiKey });
   const model = "gemini-2.5-flash-image";
 
-  // Step 1: Vision pre-pass — spatial constraint analysis
+  // Step 1: Vision pre-pass — spatial constraint analysis (with retry)
   let spatialAnalysis = 'Spatial analysis not available.';
   try {
-    const visionResponse = await ai.models.generateContent({
-      model: "gemini-2.5-flash",
-      contents: {
-        parts: [
-          {
-            inlineData: {
-              data: base64Image.includes(',') ? base64Image.split(',')[1] : base64Image,
-              mimeType: "image/jpeg",
-            }
-          },
-          {
-            text: `You are a spatial analysis AI for garden design. Analyze this garden photo and output ONLY a valid JSON object with these fields:
+    const visionResponse = await retryableGenerate(
+      () => ai.models.generateContent({
+        model: "gemini-2.5-flash",
+        contents: {
+          parts: [
+            {
+              inlineData: {
+                data: base64Image.includes(',') ? base64Image.split(',')[1] : base64Image,
+                mimeType: "image/jpeg",
+              }
+            },
+            {
+              text: `You are a spatial analysis AI for garden design. Analyze this garden photo and output ONLY a valid JSON object with these fields:
 {
   "access_points": ["list each door/gate/garage with position e.g. 'back door bottom-left'"],
   "boundaries": ["fences, walls, hedges with positions"],
@@ -48,10 +118,12 @@ export async function transformGarden(
   "garden_area": "description of the main open ground available for design"
 }
 Output ONLY the JSON. No markdown fences, no explanation.`
-          }
-        ]
-      }
-    });
+            }
+          ]
+        }
+      }),
+      'Vision pre-pass'
+    );
     const json = visionResponse.text?.trim() || '{}';
     const c = JSON.parse(json);
     spatialAnalysis = [
@@ -64,6 +136,7 @@ Output ONLY the JSON. No markdown fences, no explanation.`
     ].join('\n      ');
   } catch {
     // Vision pre-pass failed — continue without it
+    console.warn('Vision pre-pass skipped (non-critical)');
   }
 
   const w = siteIntelligence?.weather;
@@ -117,43 +190,52 @@ Output ONLY the JSON. No markdown fences, no explanation.`
       CLIENT-READY OUTPUT: The final image must be a photorealistic, professional design proposal that demonstrates both aesthetic beauty and practical common sense.`,
   });
 
-  try {
-    const response = await ai.models.generateContent({
+  // Step 2: Main image generation (with retry)
+  const response = await retryableGenerate(
+    () => ai.models.generateContent({
       model,
       contents: { parts },
-    });
+    }),
+    'Garden image generation'
+  );
 
-    if (!response.candidates || response.candidates.length === 0) {
-      throw new Error("The AI model returned no candidates. This might be due to safety filters or an invalid request.");
-    }
-
-    let imageUrl = "";
-    for (const part of response.candidates[0].content.parts) {
-      if (part.inlineData) {
-        imageUrl = `data:image/png;base64,${part.inlineData.data}`;
-      }
-    }
-
-    if (!imageUrl) {
-      throw new Error("The AI model did not generate an image. Please try a different prompt.");
-    }
-
-    // Also get a plant legend
-    const legendResponse = await ai.models.generateContent({
-      model: "gemini-2.5-flash",
-      contents: `Based on this garden transformation description: "${prompt}", and the following real weather data for this UK property:
-      ${weatherInfo}
-
-      List the specific plants (common and Latin names) best suited to these exact conditions. Prioritise plants that match the sun exposure and rainfall levels above.
-      Format as a clean markdown list with brief care tips for each.`,
-    });
-
-    return {
-      imageUrl,
-      plantLegend: legendResponse.text || "No plant legend generated.",
-    };
-  } catch (error: any) {
-    console.error("Gemini API Error:", error);
-    throw new Error(error.message || "An unexpected error occurred during AI generation.");
+  if (!response.candidates || response.candidates.length === 0) {
+    throw new Error("🛡️ The AI model returned no candidates. This might be due to safety filters — try rephrasing your prompt.");
   }
+
+  let imageUrl = "";
+  for (const part of response.candidates[0].content.parts) {
+    if (part.inlineData) {
+      imageUrl = `data:image/png;base64,${part.inlineData.data}`;
+    }
+  }
+
+  if (!imageUrl) {
+    throw new Error("The AI model did not generate an image. Please try a different prompt.");
+  }
+
+  // Step 3: Plant legend (with retry, non-critical)
+  let plantLegend = "No plant legend generated.";
+  try {
+    const legendResponse = await retryableGenerate(
+      () => ai.models.generateContent({
+        model: "gemini-2.5-flash",
+        contents: `Based on this garden transformation description: "${prompt}", and the following real weather data for this UK property:
+        ${weatherInfo}
+
+        List the specific plants (common and Latin names) best suited to these exact conditions. Prioritise plants that match the sun exposure and rainfall levels above.
+        Format as a clean markdown list with brief care tips for each.`,
+      }),
+      'Plant legend generation'
+    );
+    plantLegend = legendResponse.text || plantLegend;
+  } catch (legendErr: any) {
+    console.warn('Plant legend generation failed (non-critical):', legendErr.message);
+    // Continue without plant legend — the image is the priority
+  }
+
+  return {
+    imageUrl,
+    plantLegend,
+  };
 }
