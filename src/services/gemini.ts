@@ -87,6 +87,26 @@ async function retryableGenerate<T>(
 
 // ─── Engine 1: FLUX Inpainting (for masked edits) ────────────────────────────
 
+// Helper: Upload a single base64 image to fal.ai storage via our server
+async function uploadImageToFal(base64: string, filename: string): Promise<string> {
+  const res = await fetch('/api/fal-upload', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ base64, filename })
+  });
+
+  if (!res.ok) {
+    const errorData = await res.json().catch(() => ({}));
+    throw new Error(errorData.error || `Image upload failed (${res.status})`);
+  }
+
+  const data = await res.json();
+  if (!data.url) {
+    throw new Error('Upload returned no URL');
+  }
+  return data.url;
+}
+
 async function inpaintWithFlux(
   base64Image: string,
   maskBase64: string,
@@ -94,15 +114,24 @@ async function inpaintWithFlux(
 ): Promise<{ imageUrl: string }> {
   console.log("🎯 MASK DETECTED → Using FLUX Pro Fill for true inpainting");
 
+  // Step 1: Upload both images to fal.ai CDN separately (avoids 413 errors)
+  console.log("📤 Uploading images to fal.ai storage...");
+  const [imageUrl, maskUrl] = await Promise.all([
+    uploadImageToFal(base64Image, 'garden-image.png'),
+    uploadImageToFal(maskBase64, 'garden-mask.png'),
+  ]);
+  console.log("✅ Images uploaded to CDN");
+
+  // Step 2: Call inpainting with just URLs + prompt (tiny payload)
   const response = await retryableGenerate(
     async () => {
       const res = await fetch('/api/inpaint', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          imageBase64: base64Image,
-          maskBase64: maskBase64,
-          prompt: prompt
+          imageUrl,
+          maskUrl,
+          prompt
         })
       });
 
@@ -120,14 +149,14 @@ async function inpaintWithFlux(
   );
 
   // fal.ai returns { images: [{ url: "..." }] }
-  const imageUrl = response.images?.[0]?.url;
+  const resultImageUrl = response.images?.[0]?.url;
 
-  if (!imageUrl) {
+  if (!resultImageUrl) {
     throw new Error("The inpainting model did not return an image. Please try again.");
   }
 
   // Fetch the image from fal.ai's CDN and convert to base64 data URI
-  const imageResponse = await fetch(imageUrl);
+  const imageResponse = await fetch(resultImageUrl);
   const imageBlob = await imageResponse.blob();
   const imageBase64Result = await new Promise<string>((resolve) => {
     const reader = new FileReader();

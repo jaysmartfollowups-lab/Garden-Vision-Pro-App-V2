@@ -104,80 +104,78 @@ async function startServer() {
     }
   });
 
-  // ─── FLUX Inpainting Proxy (fal.ai — True pixel-level mask inpainting) ───
-  // This uses a dedicated inpainting model that architecturally understands masks.
-  // Unlike Gemini (which regenerates the entire image), FLUX Fill ONLY modifies
-  // pixels in the masked (white) region and preserves everything else exactly.
+  // ─── fal.ai Image Upload (single image → CDN URL) ───────────────────────────
+  // Uploads ONE base64 image to fal.ai storage and returns the CDN URL.
+  // This keeps each request small enough for any hosting platform.
+  app.post("/api/fal-upload", async (req, res) => {
+    const { base64, filename } = req.body;
+    const falKey = process.env.FAL_KEY;
+
+    if (!falKey || falKey === 'your_fal_key_here') {
+      return res.status(503).json({ error: "FAL_KEY not configured" });
+    }
+
+    if (!base64) {
+      return res.status(400).json({ error: "base64 is required" });
+    }
+
+    try {
+      const base64Data = base64.includes(',') ? base64.split(',')[1] : base64;
+      const mimeMatch = base64.match(/data:([^;]+);/);
+      const mimeType = mimeMatch ? mimeMatch[1] : 'image/png';
+      const buffer = Buffer.from(base64Data, 'base64');
+      const fname = filename || 'image.png';
+
+      console.log(`📤 Uploading ${fname} (${(buffer.length / 1024).toFixed(0)}KB) to fal.ai...`);
+
+      // Try the REST API upload endpoint
+      const response = await fetch('https://rest.alpha.fal.ai/storage/upload', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Key ${falKey}`,
+          'Content-Type': mimeType,
+          'X-Fal-File-Name': fname,
+        },
+        body: buffer,
+      });
+
+      if (!response.ok) {
+        const errText = await response.text().catch(() => '');
+        throw new Error(`fal.ai upload failed (${response.status}): ${errText}`);
+      }
+
+      const data = await response.json();
+      const url = data.url || data.file_url;
+
+      if (!url) {
+        throw new Error('fal.ai upload returned no URL');
+      }
+
+      console.log(`✅ Uploaded ${fname} → ${url.substring(0, 60)}...`);
+      res.json({ url });
+    } catch (error: any) {
+      console.error("Upload Error:", error);
+      res.status(500).json({ error: error.message || "Upload failed" });
+    }
+  });
+
+  // ─── FLUX Inpainting (URLs only — tiny payload) ────────────────────────────
+  // Accepts CDN URLs (from /api/fal-upload) + prompt. No base64 in this request.
   app.post("/api/inpaint", async (req, res) => {
-    const { imageBase64, maskBase64, prompt } = req.body;
+    const { imageUrl, maskUrl, prompt } = req.body;
     const falKey = process.env.FAL_KEY;
 
     if (!falKey || falKey === 'your_fal_key_here') {
       return res.status(503).json({ error: "FAL_KEY not configured — add your fal.ai key to .env for mask editing" });
     }
 
-    if (!imageBase64 || !maskBase64 || !prompt) {
-      return res.status(400).json({ error: "imageBase64, maskBase64, and prompt are required" });
-    }
-
-    // Helper: Upload a base64 data URI to fal.ai storage and get a CDN URL back.
-    // This avoids 413 errors from sending huge base64 payloads in the API call.
-    async function uploadToFalStorage(base64DataUri: string, filename: string): Promise<string> {
-      // Strip the data URI prefix to get raw base64
-      const base64Data = base64DataUri.includes(',') ? base64DataUri.split(',')[1] : base64DataUri;
-      const mimeMatch = base64DataUri.match(/data:([^;]+);/);
-      const mimeType = mimeMatch ? mimeMatch[1] : 'image/png';
-      
-      // Convert base64 to Buffer
-      const buffer = Buffer.from(base64Data, 'base64');
-
-      // Upload to fal.ai storage
-      const uploadResponse = await fetch(`https://fal.ai/api/storage/upload/${filename}`, {
-        method: 'PUT',
-        headers: {
-          'Authorization': `Key ${falKey}`,
-          'Content-Type': mimeType,
-        },
-        body: buffer,
-      });
-
-      if (!uploadResponse.ok) {
-        // Try the REST API endpoint as fallback
-        const restResponse = await fetch('https://rest.alpha.fal.ai/storage/upload', {
-          method: 'POST',
-          headers: {
-            'Authorization': `Key ${falKey}`,
-            'Content-Type': mimeType,
-            'X-Fal-File-Name': filename,
-          },
-          body: buffer,
-        });
-
-        if (!restResponse.ok) {
-          throw new Error(`Failed to upload ${filename} to fal.ai storage (${restResponse.status})`);
-        }
-
-        const restData = await restResponse.json();
-        return restData.url || restData.file_url;
-      }
-
-      const data = await uploadResponse.json();
-      return data.url || data.file_url;
+    if (!imageUrl || !maskUrl || !prompt) {
+      return res.status(400).json({ error: "imageUrl, maskUrl, and prompt are required" });
     }
 
     try {
-      console.log("🎨 Starting FLUX inpainting with mask...");
-      console.log("📤 Uploading images to fal.ai storage...");
+      console.log("🎨 Calling FLUX Pro Fill inpainting...");
 
-      // Upload both images to fal.ai CDN (parallel for speed)
-      const [imageUrl, maskUrl] = await Promise.all([
-        uploadToFalStorage(imageBase64, 'garden-image.png'),
-        uploadToFalStorage(maskBase64, 'garden-mask.png'),
-      ]);
-
-      console.log("✅ Images uploaded. Calling FLUX Pro Fill...");
-
-      // Now call the inpainting API with lightweight CDN URLs (not base64)
       const response = await fetch("https://fal.run/fal-ai/flux-pro/v1/fill", {
         method: "POST",
         headers: {
@@ -199,7 +197,7 @@ async function startServer() {
         const errorData = await response.json().catch(() => ({}));
         console.error("FLUX Fill API Error:", response.status, errorData);
         
-        // Fallback to flux-general/inpainting if Pro isn't available
+        // Fallback to flux-general/inpainting
         console.log("⚠️ Pro Fill unavailable, trying flux-general/inpainting...");
         const fallbackResponse = await fetch("https://fal.run/fal-ai/flux-general/inpainting", {
           method: "POST",
