@@ -94,6 +94,48 @@ export async function buildGardenMask(maskSrcs: string[], refImageSrc: string): 
 }
 
 /**
+ * Feathers (blurs) the edges of a mask to create smooth transitions.
+ * This prevents hard edges when compositing the AI-generated image
+ * with the original, making the blend look natural and seamless.
+ * 
+ * White areas = edit zone (will show transformed image)
+ * Black areas = keep zone (will show original image)
+ * Grey gradient edges = smooth blend zone
+ */
+export async function featherMask(maskBase64: string, radius: number = 20): Promise<string> {
+  return new Promise((resolve) => {
+    const img = new Image();
+    img.onload = () => {
+      const canvas = document.createElement('canvas');
+      canvas.width = img.width;
+      canvas.height = img.height;
+      const ctx = canvas.getContext('2d')!;
+
+      // Draw the original sharp mask
+      ctx.drawImage(img, 0, 0);
+
+      // Apply Gaussian-like blur using Canvas filter API
+      // This feathers the edges so the composite has smooth transitions
+      const blurCanvas = document.createElement('canvas');
+      blurCanvas.width = img.width;
+      blurCanvas.height = img.height;
+      const blurCtx = blurCanvas.getContext('2d')!;
+
+      // Use CSS filter blur (hardware-accelerated in modern browsers)
+      blurCtx.filter = `blur(${radius}px)`;
+      blurCtx.drawImage(canvas, 0, 0);
+
+      // Reset filter and read the blurred result
+      blurCtx.filter = 'none';
+
+      resolve(blurCanvas.toDataURL('image/png'));
+    };
+    img.onerror = () => resolve(maskBase64); // Fallback to unfeathered mask
+    img.src = maskBase64;
+  });
+}
+
+/**
  * Composites two images using a mask.
  * White areas in the mask will show the 'after' image.
  * Black areas in the mask will show the 'before' image.

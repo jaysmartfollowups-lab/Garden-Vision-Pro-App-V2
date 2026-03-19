@@ -18,7 +18,7 @@ import { handleFirestoreError, OperationType } from '../lib/firebase-errors';
 import { MaskCanvas } from './MaskCanvas';
 import { VoiceInput } from './VoiceInput';
 import { ImageSlider } from './ImageSlider';
-import { compressImage, compositeImages, buildGardenMask } from '../lib/image';
+import { compressImage, compositeImages, buildGardenMask, featherMask } from '../lib/image';
 import { 
   Plus, 
   History, 
@@ -250,10 +250,12 @@ export function ProjectView({ project, onBack }: ProjectViewProps) {
       console.log("Transformation successful, processing image...");
 
       // Composite: manual mask takes priority, then auto-mask, then no compositing
+      // Feather the mask edges for seamless blending between original & transformed
       let finalImageUrl = result.imageUrl;
       const activeMask = maskBase64 || autoMask;
       if (activeMask) {
-        finalImageUrl = await compositeImages(currentVersion.imageUrl, result.imageUrl, activeMask);
+        const featheredMask = await featherMask(activeMask, 20);
+        finalImageUrl = await compositeImages(currentVersion.imageUrl, result.imageUrl, featheredMask);
       }
 
       // Compress final image before saving

@@ -157,14 +157,10 @@ Output ONLY the JSON. No markdown fences, no explanation.`
     },
   ];
 
-  if (maskImage) {
-    parts.push({
-      inlineData: {
-        data: maskImage.includes(',') ? maskImage.split(',')[1] : maskImage,
-        mimeType: "image/png",
-      },
-    });
-  }
+  // NOTE: We intentionally do NOT send the mask image to Gemini.
+  // Gemini is a generative model, not an inpainting model — it cannot
+  // respect pixel-level masks. Instead, we handle masking entirely
+  // client-side via compositing with feathered edges (see image.ts).
 
   parts.push({
     text: `You are a Senior Professional Garden Designer with expertise in spatial planning and landscape architecture. Transform this garden based on this description: "${prompt}".
@@ -184,7 +180,7 @@ Output ONLY the JSON. No markdown fences, no explanation.`
       5. PROPORTIONAL SCALE: Ensure all furniture, planters, and features are scaled appropriately to the size of the garden. Do not overcrowd small spaces with oversized furniture.
       6. USAGE-FIRST LOGIC: Prioritize how people will actually move and live in the garden. A design must be as functional as it is beautiful.
       7. REMOVE CLUTTER: Automatically identify and remove unsightly objects (bins, trash, tools) and replace them with intentional design elements.
-      8. ITERATIVE DESIGN: Build ON TOP of the provided image. ${maskImage ? 'The second image is a mask showing the exact area selected for editing (white = edit here, black = leave unchanged). Apply the transformation ONLY to the white region, keeping everything else pixel-perfect.' : 'Transform the whole garden as described.'}
+      8. ITERATIVE DESIGN: Build ON TOP of the provided image. ${maskImage ? 'CRITICAL PARTIAL EDIT MODE: The user wants to change ONLY a specific area of this garden. You MUST preserve the EXACT same camera angle, perspective, lighting, shadows, colors, and composition as the original photo. Every part of the image that is NOT being changed must be PIXEL-IDENTICAL to the original. Generate the full garden image but ONLY apply the described change ("' + prompt + '") to the relevant area. Everything else — fences, buildings, paths, plants, sky, unchanged grass — must look exactly like the original photo. Do NOT reimagine or restyle the overall scene.' : 'Transform the whole garden as described.'}
       9. UK CONTEXT: Use plants and materials suitable for the UK climate (e.g., Lavender, Hydrangeas, York stone).
 
       CLIENT-READY OUTPUT: The final image must be a photorealistic, professional design proposal that demonstrates both aesthetic beauty and practical common sense.`,
