@@ -2,7 +2,7 @@
  * Compresses a base64 image to fit within Firestore's 1MB limit.
  * Resizes the image to a maximum dimension and uses JPEG compression.
  */
-export async function compressImage(base64: string, maxWidth = 1024, quality = 0.7): Promise<string> {
+export async function compressImage(base64: string, maxWidth = 1536, quality = 0.88): Promise<string> {
   return new Promise((resolve, reject) => {
     const img = new Image();
     img.onload = () => {

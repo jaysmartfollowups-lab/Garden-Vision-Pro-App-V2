@@ -1,31 +1,8 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
-    // Helper functions
-    function isAuthenticated() {
-      return request.auth != null;
-    }
-    function isOwner(userId) {
-      return isAuthenticated() && request.auth.uid == userId;
-    }
-    function isProjectOwner(projectId) {
-      return isAuthenticated() && get(/databases/$(database)/documents/projects/$(projectId)).data.ownerId == request.auth.uid;
-    }
-
-    // Projects
-    match /projects/{projectId} {
-      allow read: if isOwner(resource.data.ownerId);
-      allow create: if isAuthenticated() && request.resource.data.ownerId == request.auth.uid;
-      allow update: if isOwner(resource.data.ownerId) && request.resource.data.ownerId == resource.data.ownerId;
-      allow delete: if isOwner(resource.data.ownerId);
-
-      // Versions subcollection
-      match /versions/{versionId} {
-        allow read: if isProjectOwner(projectId);
-        allow create: if isProjectOwner(projectId);
-        allow update: if isProjectOwner(projectId);
-        allow delete: if isProjectOwner(projectId);
-      }
+    match /{document=**} {
+      allow read, write: if request.auth != null;
     }
   }
 }

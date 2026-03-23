@@ -7,6 +7,14 @@ import * as dotenv from "dotenv";
 
 dotenv.config();
 
+// Configure fal.ai at startup so all requests share the same credentials
+if (process.env.FAL_KEY) {
+  fal.config({ credentials: process.env.FAL_KEY });
+  console.log("✅ fal.ai configured with FAL_KEY");
+} else {
+  console.warn("⚠️  FAL_KEY not set — mask editing will be unavailable");
+}
+
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
@@ -124,32 +132,26 @@ async function startServer() {
     }
 
     try {
-      fal.config({ credentials: falKey });
-
       const base64Data = base64.includes(',') ? base64.split(',')[1] : base64;
       const mimeMatch = base64.match(/data:([^;]+);/);
       const mimeType = mimeMatch ? mimeMatch[1] : 'image/png';
       const buffer = Buffer.from(base64Data, 'base64');
       const fname = filename || 'image.png';
 
-      console.log(`📤 Uploading ${fname} (${(buffer.length / 1024).toFixed(0)}KB) to fal.ai...`);
+      console.log(`📤 Uploading ${fname} (${(buffer.length / 1024).toFixed(0)}KB) to fal.ai storage...`);
 
-      // Use the official fal-ai client for reliable storage uploading
-      const b = new Blob([buffer], { type: mimeType });
-      // Add a property 'name' to the Blob so fal client knows what extension to use
-      (b as any).name = fname;
+      const blob = new Blob([buffer], { type: mimeType });
+      (blob as any).name = fname;
 
-      const url = await fal.storage.upload(b);
+      const url = await fal.storage.upload(blob);
 
-      if (!url) {
-        throw new Error('fal.ai upload returned no URL');
-      }
+      if (!url) throw new Error('Upload returned no URL');
 
-      console.log(`✅ Uploaded ${fname} → ${url.substring(0, 60)}...`);
+      console.log(`✅ Uploaded → ${url.substring(0, 60)}...`);
       res.json({ url });
     } catch (error: any) {
-      console.error("Upload Error:", error);
-      res.status(500).json({ error: error.message || "Upload failed" });
+      console.error("Upload Error (raw):", error);
+      res.status(500).json({ error: `Upload failed: ${error.message}` });
     }
   });
 

@@ -55,25 +55,34 @@ export function ProjectList({ onSelectProject }: ProjectListProps) {
 
 
   useEffect(() => {
-    const q = query(
-      collection(db, 'projects'),
-      where('ownerId', '==', getUid()),
-      orderBy('updatedAt', 'desc')
-    );
+    let snapUnsub: (() => void) | null = null;
 
-    const unsubscribe = onSnapshot(q, (snapshot) => {
-      const projectsData = snapshot.docs.map(doc => ({
-        id: doc.id,
-        ...doc.data()
-      })) as Project[];
-      setProjects(projectsData);
-      setError(null);
-    }, (err) => {
-      handleFirestoreError(err, OperationType.LIST, 'projects');
-      setError('Failed to load projects. Please check your connection or permissions.');
+    const authUnsub = auth.onAuthStateChanged((user) => {
+      if (!user) return;
+
+      const q = query(
+        collection(db, 'projects'),
+        where('ownerId', '==', user.uid),
+        orderBy('updatedAt', 'desc')
+      );
+
+      snapUnsub = onSnapshot(q, (snapshot) => {
+        const projectsData = snapshot.docs.map(doc => ({
+          id: doc.id,
+          ...doc.data()
+        })) as Project[];
+        setProjects(projectsData);
+        setError(null);
+      }, (err) => {
+        console.warn('Projects snapshot error:', err.message);
+        setError('Failed to load projects. Please check your connection.');
+      });
     });
 
-    return () => unsubscribe();
+    return () => {
+      authUnsub();
+      if (snapUnsub) snapUnsub();
+    };
   }, []);
 
   const [formError, setFormError] = useState<string | null>(null);

@@ -168,11 +168,11 @@ async function inpaintWithFlux(
 ): Promise<{ imageUrl: string }> {
   console.log("🎯 MASK DETECTED → Using FLUX Pro Fill for true inpainting");
 
-  // Step 1: Compress images client-side (512px, JPEG 0.6 = ~30-80KB each)
+  // Step 1: Compress images client-side (1024px, JPEG 0.88 = good quality for FLUX)
   console.log("🗜️ Compressing images for upload...");
   const [compressedImage, compressedMask] = await Promise.all([
-    compressForUpload(base64Image, 512, 0.6),
-    compressMask(maskBase64, 512),
+    compressForUpload(base64Image, 1024, 0.88),
+    compressMask(maskBase64, 1024),
   ]);
 
   // Step 2: Upload both images to fal.ai CDN separately (avoids 413 errors)

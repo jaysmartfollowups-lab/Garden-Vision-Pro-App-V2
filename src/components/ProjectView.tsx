@@ -80,25 +80,34 @@ export function ProjectView({ project, onBack }: ProjectViewProps) {
   ];
 
   useEffect(() => {
-    const q = query(
-      collection(db, 'projects', project.id, 'versions'),
-      orderBy('createdAt', 'desc')
-    );
+    let snapUnsub: (() => void) | null = null;
 
-    const unsubscribe = onSnapshot(q, (snapshot) => {
-      const versionsData = snapshot.docs.map(doc => ({
-        id: doc.id,
-        ...doc.data()
-      })) as GardenVersion[];
-      setVersions(versionsData);
-      if (versionsData.length > 0 && !currentVersion) {
-        setCurrentVersion(versionsData[0]);
-      }
-    }, (err) => {
-      handleFirestoreError(err, OperationType.LIST, `projects/${project.id}/versions`);
+    const authUnsub = auth.onAuthStateChanged((user) => {
+      if (!user) return;
+
+      const q = query(
+        collection(db, 'projects', project.id, 'versions'),
+        orderBy('createdAt', 'desc')
+      );
+
+      snapUnsub = onSnapshot(q, (snapshot) => {
+        const versionsData = snapshot.docs.map(doc => ({
+          id: doc.id,
+          ...doc.data()
+        })) as GardenVersion[];
+        setVersions(versionsData);
+        if (versionsData.length > 0 && !currentVersion) {
+          setCurrentVersion(versionsData[0]);
+        }
+      }, (err) => {
+        console.warn('Versions snapshot error:', err.message);
+      });
     });
 
-    return () => unsubscribe();
+    return () => {
+      authUnsub();
+      if (snapUnsub) snapUnsub();
+    };
   }, [project.id]);
 
   useEffect(() => {
@@ -295,8 +304,8 @@ export function ProjectView({ project, onBack }: ProjectViewProps) {
       let errorMessage = 'An error occurred during generation. Please try again.';
       
       if (err.message) {
-        if (err.message.includes('FAL_KEY') || err.message.includes('fal.ai')) {
-          errorMessage = '🔑 Mask editing requires a fal.ai API key. Add FAL_KEY to your Secrets in Settings (get one free at fal.ai/dashboard/keys).';
+        if (err.message.includes('FAL_KEY not configured')) {
+          errorMessage = '🔑 Mask editing requires a fal.ai API key. Add FAL_KEY to your .env file (get one free at fal.ai/dashboard/keys).';
         } else if (err.message.includes('Inpainting') || err.message.includes('inpainting')) {
           errorMessage = '🎨 Mask inpainting failed. ' + err.message;
         } else if (err.message.includes('authInfo')) {
